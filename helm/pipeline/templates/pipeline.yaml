@@ -1,0 +1,88 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: {{ .Values.app.name }}-pipeline
+  labels:
+    type: pipeline
+    backstage.io/kubernetes-id: {{ .Values.app.name }}
+spec:
+  params:
+  - name: git-url
+    default: {{ .Values.git.repo }}
+  - name: git-branch
+    default: {{ .Values.git.branch }}
+  - name: target-namespace
+    default: {{ .Values.namespace }}
+  - name: output-image
+    description: reference of the image that will get created
+    default: {{ include "image.url" . }}
+    type: string
+  workspaces:
+  - name: ws
+
+  tasks:
+  - name: clone-repository
+    taskRef:
+      name: {{ .Values.app.name }}-git-clone
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-branch)
+    - name: subdirectory
+      value: source
+    - name: deleteExisting
+      value: "true"
+    workspaces:
+    - name: output
+      workspace: ws
+
+   - name: package
+      runAfter:
+        - git-clone
+      taskRef:
+        kind: ClusterTask
+        name: maven
+      workspaces:
+        - name: source
+          workspace: source
+        - name: maven-settings
+          workspace: maven-settings
+
+  - name: build-image
+    runAfter:
+    - build-artifact
+    taskRef:
+      name: buildah
+      kind: ClusterTask
+    params:
+    - name: IMAGE
+      value: $(params.output-image)
+    - name: DOCKERFILE
+      value: source/Dockerfile
+    - name: CONTEXT
+      value: source
+    - name: TLSVERIFY
+      value: "false"
+    workspaces:
+    - name: source
+      workspace: ws
+
+  - name: update-manifest-and-push
+    runAfter:
+    - build-image
+    taskRef:
+      name: {{ .Values.app.name }}-update-manifest
+    params:
+    - name: short-commit
+      value: $(tasks.clone-repository.results.short-commit)
+    - name: target-branch
+      value: $(params.git-branch)
+    - name: config-subdirectory
+      value: helm
+    - name: git-root-directory
+      value: source
+    workspaces:
+    - name: source
+      workspace: ws
